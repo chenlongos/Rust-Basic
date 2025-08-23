@@ -2,63 +2,84 @@
   description = "Small exercises to get you used to reading and writing Rust code";
 
   inputs = {
-    flake-compat = {
-      url = "github:edolstra/flake-compat";
-      flake = false;
-    };
+    nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, flake-utils, nixpkgs, ... }:
+  outputs = { self, nixpkgs, flake-utils, rust-overlay }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [ rust-overlay.overlays.default ];
+        };
+
+        rustToolchain = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
+          extensions = [ "rust-src" "rust-analyzer" ];
+        });
 
         cargoBuildInputs = with pkgs; lib.optionals stdenv.isDarwin [
           darwin.apple_sdk.frameworks.CoreServices
         ];
 
-        rustlings =
-          pkgs.rustPlatform.buildRustPackage {
-            name = "rustlings";
-            version = "5.5.1";
+        rustlings = pkgs.rustPlatform.buildRustPackage {
+          pname = "rustlings";
+          version = "5.5.1";
 
-            buildInputs = cargoBuildInputs;
-
-            src = with pkgs.lib; cleanSourceWith {
-              src = self;
-              # a function that returns a bool determining if the path should be included in the cleaned source
-              filter = path: type:
-                let
-                  # filename
-                  baseName = builtins.baseNameOf (toString path);
-                  # path from root directory
-                  path' = builtins.replaceStrings [ "${self}/" ] [ "" ] path;
-                  # checks if path is in the directory
-                  inDirectory = directory: hasPrefix directory path';
-                in
-                inDirectory "src" ||
-                inDirectory "tests" ||
-                hasPrefix "Cargo" baseName ||
-                baseName == "info.toml";
-            };
-
-            cargoLock.lockFile = ./Cargo.lock;
+          src = pkgs.lib.cleanSourceWith {
+            src = self;
+            filter = path: type:
+              let
+                baseName = builtins.baseNameOf (toString path);
+                path' = builtins.replaceStrings [ "${self}/" ] [ "" ] path;
+                inDirectory = directory: pkgs.lib.hasPrefix directory path';
+              in
+              inDirectory "src" ||
+              inDirectory "tests" ||
+              inDirectory "exercises" ||
+              pkgs.lib.hasPrefix "Cargo" baseName ||
+              baseName == "info.toml" ||
+              baseName == "flake.nix" ||
+              baseName == "flake.lock";
           };
+
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+          };
+
+          buildInputs = cargoBuildInputs;
+
+          meta = with pkgs.lib; {
+            description = "Small exercises to get you used to reading and writing Rust code";
+            homepage = "https://github.com/rust-lang/rustlings";
+            license = licenses.mit;
+          };
+        };
       in
       {
-        devShell = pkgs.mkShell {
-          RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
-
-          buildInputs = with pkgs; [
-            cargo
-            rustc
-            rust-analyzer
-            rustlings
-            rustfmt
-            clippy
-          ] ++ cargoBuildInputs;
+        packages = {
+          default = rustlings;
+          rustlings = rustlings;
         };
+
+        devShells.default = pkgs.mkShell {
+          RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
+
+          buildInputs = [
+            rustToolchain
+          ] ++ cargoBuildInputs;
+
+          shellHook = ''
+            echo "Rustlings development environment"
+            echo "Run 'cargo run' to start rustlings"
+          '';
+        };
+
+        # Legacy alias for backwards compatibility
+        devShell = self.devShells.${system}.default;
       });
 }
